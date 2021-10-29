@@ -87,29 +87,45 @@ def ms_locator(df1, ppm=50):
     return locators
 
 
-def sep_scans(path):
+def sep_scans(path,company):
     '''
-    To separate scan for MS1, MS2 and lockspray. Only supported for Waters .raw data
+    To separate scan for MS1, MS2 and lockspray. Only supported for Waters .raw and Agilent .d file
     :param path: The path for mzML files
     :return: ms1, ms2 and lockspray
     '''
-    a = time.time()
-    print('\r Reading files...             ', end="")
-    run = pymzml.run.Reader(path)
-    ms1 = []
-    ms2 = []
-    lockspray = []
-    for scan in run:
-        if scan.id_dict['function'] == 1:
-            ms1.append(scan)
-        if scan.id_dict['function'] == 2:
-            ms2.append(scan)
-        if scan.id_dict['function'] == 3:
-            lockspray.append(scan)
-    b = time.time()
-    time1 = round(b - a, 2)
-    print(f'\r Reading files finished! {time1} s        ', end='')
-    return ms1, ms2, lockspray
+    if company == 'Waters':
+        a = time.time()
+        print('\r Reading files...             ', end="")
+        run = pymzml.run.Reader(path)
+        ms1,ms2 = [],[]
+        lockspray = []
+        for scan in run:
+            if scan.id_dict['function'] == 1:
+                ms1.append(scan)
+            if scan.id_dict['function'] == 2:
+                ms2.append(scan)
+            if scan.id_dict['function'] == 3:
+                lockspray.append(scan)
+        b = time.time()
+        time1 = round(b - a, 2)
+        print(f'\r Reading files finished! Total time: {time1} s        ', end='')
+        return ms1, ms2, lockspray
+    elif company == 'Agilent':
+        a = time.time()
+        print('\r Reading files...             ', end="")
+        run = pymzml.run.Reader(path)
+        ms1,ms2 = [],[]
+        for i, scan in enumerate(run):
+            if scan.ms_level ==1:
+                ms1.append(scan)
+            else:
+                ms2.append(scan)
+        b = time.time()
+        time1 = round(b - a, 2)
+        print(f'\r Reading files finished! Total time: {time1} s        ', end='')
+        return ms1, ms2
+
+        
 
 
 def peak_finding(eic, threshold=15):
@@ -267,7 +283,7 @@ def cal_bg(data):
     return bg+1
 
 
-def peak_checking_plot(df1, mz, rt1, path=None):
+def peak_checking_plot(df1, mz, rt1,Type = 'profile', path=None):
     '''
     Evaluating/visulizing the extracted mz
     :param df1: LC-MS dataframe, genrated by the function gen_df()
@@ -280,8 +296,8 @@ def peak_checking_plot(df1, mz, rt1, path=None):
     ### 检查色谱图ax
     ax = fig.add_subplot(121)
     rt, eic = extract(df1, mz, 50)
-    rt2 = rt[where((rt > rt1 - 1) & (rt < rt1 + 1))]
-    eic2 = eic[where((rt > rt1 - 1) & (rt < rt1 + 1))]
+    rt2 = rt[where((rt > rt1 - 2) & (rt < rt1 + 2))]
+    eic2 = eic[where((rt > rt1 - 2) & (rt < rt1 + 2))]
     ax.plot(rt2, eic2)
     ax.set_xlabel('Retention Time(min)', fontsize=12)
     ax.set_ylabel('Intensity', fontsize=12)
@@ -308,12 +324,19 @@ def peak_checking_plot(df1, mz, rt1, path=None):
     mz1, intensity = df1.iloc[:, index_rt].index.values, df1.iloc[:, index_rt].values  ## 提取整个质谱图
     index_mz = argmin(abs(mz1 - mz))
     mz1, intensity = mz1[index_mz - width:index_mz + width], intensity[index_mz - width:index_mz + width]  ## 质谱图切片
-    ax1.plot(mz1, intensity)
-    ax1.bar(mz, max(intensity), color='r', width=0.001)
+    index_mz = argmin(abs(mz1 - mz))
+    if Type == 'profile':
+        ax1.plot(mz1, intensity)
+        ax1.bar(mz, max(intensity), color='r', width=0.001)
+    else:
+        ax1.bar(mz1,intensity,width = 0.0002)
+        
+    ax1.text(mz1[index_mz],intensity[index_mz],f'{mz1[index_mz]}')
     ax1.set_title(f'm/z: {mz}')
     ax1.set_xlabel('m/z', fontsize=12)
     ax1.set_ylabel('Intensity', fontsize=12)
-
+    ax1.set_xlim(mz-0.01, mz+0.01)
+    
     if path == None:
         pass
     else:
@@ -579,6 +602,10 @@ def peak_checking(peak_df, df1, error=50,
         ### 第一步：处理色谱峰
         rt_e, eic_e = extract(df1, mz, error=error)
         peak_index = np.argmin(abs(rt_e - rt))  ## 找到特定时间点的索引
+        rt_left = rt-0.2
+        rt_right = rt+0.2
+        peak_index_left = np.argmin(abs(rt_e - rt_left))
+        peak_index_right = np.argmin(abs(rt_e - rt_right))
         mz_all, intensity_t = df1.iloc[:, peak_index].index.values, df1.iloc[:, peak_index].values  ## 提取特定时间的质谱峰
         try:
             peak_height = max(eic_e[peak_index - 2:peak_index + 2])
@@ -586,8 +613,7 @@ def peak_checking(peak_df, df1, error=50,
         except:
             peak_height = 1
             other_peak = 3
-        width = 150  ### 限定区域，左右300个扫描点数
-        rt_t, eic_t = rt_e[peak_index - width:peak_index + width], eic_e[peak_index - width:peak_index + width]
+        rt_t, eic_t = rt_e[peak_index_left:peak_index_right], eic_e[peak_index_left:peak_index_right]
         try:
             area = scipy.integrate.simps(eic_e[peak_index - 40:peak_index + 40])
         except:
@@ -791,17 +817,10 @@ def database_1st_plot(df1,mz,smi=None,name = None, formula = None,CAS = None, pa
         fig.savefig(path,dpi=600)
         plt.close('all')
 
-def batch_process_single(Path):
-    path_all = glob(Path+ r'\*.mzML')
-    for path in path_all:
-        ms1,ms2,lockspray=sep_scans(path)
-        df1 = gen_df_raw(ms1,ms_round=4)
-        peak_all = peak_picking(df1)
-        peak_selected = peak_checking(peak_all,df1)
-        peak_selected.to_excel(path.replace('.mzML','.xlsx'))  
+
         
-def multi_process(file):
-    ms1,ms2,lockspray = sep_scans(file)
+def multi_process(file,company):
+    ms1,ms2,lockspray = sep_scans(file,company)
     df1 = gen_df_raw(ms1)
     peak_all = peak_picking(df1)
     peak_selected = peak_checking(peak_all,df1)
@@ -827,6 +846,18 @@ def KMD_cal(mz_set, group='Br/H'):
         KM = mz_set*(int(f1_value)/f1_value)
         KMD_set = KM - np.floor(mz_set)
     return KMD_set
+
+
+def sep_result(result, replicate = 4, batch = 5):
+    a = 0
+    sep_result = []
+    for i in range(batch):
+        name = 'b' + str(i)
+        sep_result.append(result[result.columns[a:a+replicate]])
+        a += replicate
+        
+    return sep_result
+
 
 if __name__ == '__main__':
     pass
