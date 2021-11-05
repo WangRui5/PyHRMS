@@ -12,6 +12,8 @@ import scipy.interpolate as interpolate
 import multiprocessing as mp
 from molmass import Formula
 import os
+import json
+import sys
 
 
 # %config InlineBackend.figure_format = 'retina'
@@ -64,7 +66,6 @@ def ms_locator(df1, ppm=50):
     :param ppm: the mass difference between two locators
     :return: mass locators
     '''
-
     @jit(nopython=True)
     def find_locator(list1, error):
         locators = []
@@ -103,7 +104,7 @@ def sep_scans(path, company):
                 lockspray.append(scan)
         b = time.time()
         time1 = round(b - a, 2)
-        print(f'\r Reading files finished! Total time: {time1} s        ', end='')
+        print(f'\r Reading files finished! Total time: {time1} s           ', end='')
         return ms1, ms2, lockspray
     elif company == 'Agilent':
         a = time.time()
@@ -117,7 +118,8 @@ def sep_scans(path, company):
                 ms2.append(scan)
         b = time.time()
         time1 = round(b - a, 2)
-        print(f'\r Reading files finished! Total time: {time1} s        ', end='')
+        print(f'\r Reading files finished! Total time: {time1} s           ', end='')
+        
         return ms1, ms2
 
 
@@ -146,6 +148,7 @@ def peak_finding(eic, threshold=15):
     return peak_index, left, right
 
 
+
 def extract(df1, mz, error=50):
     '''
     Extracting chromatogram based on mz and error.
@@ -165,6 +168,7 @@ def extract(df1, mz, error=50):
     else:
         intensity = np.array(df2).T.sum(axis=1)
     return rt, intensity  ### 只返回RT和EIC
+
 
 
 def gen_df_to_centroid(ms1, ms_round=4):
@@ -311,23 +315,25 @@ def peak_checking_plot(df1, mz, rt1, Type='profile', path=None):
 
     ### 检查质谱图ax1
     ax1 = fig.add_subplot(122)
-    index_rt = argmin(abs(rt - rt1))
-    width = 15
-    mz1, intensity = df1.iloc[:, index_rt].index.values, df1.iloc[:, index_rt].values  ## 提取整个质谱图
-    index_mz = argmin(abs(mz1 - mz))
-    mz1, intensity = mz1[index_mz - width:index_mz + width], intensity[index_mz - width:index_mz + width]  ## 质谱图切片
-    index_mz = argmin(abs(mz1 - mz))
+    width = 0.02
+    spec = spec_at_rt(df1,rt1)  ## 提取到特定时间点的质谱图
+    new_spec = target_spec(spec, mz, width=0.04)
+    
     if Type == 'profile':
-        ax1.plot(mz1, intensity)
-        ax1.bar(mz, max(intensity), color='r', width=0.001)
+        mz_obs, error1, mz_opt, error2, resolution = evaluate_ms(new_spec, mz)
+        ax1.plot(new_spec)
+        ax1.bar(mz, max(new_spec.values), color='r', width=0.0005)
+        ax1.bar(mz_opt,max(new_spec.values), color='g', width=0.0005)
+        ax1.text(min(new_spec.index.values)+0.005, max(new_spec.values)*0.8, 
+             f'mz_obs: {mz_obs},{error1} \n mz_opt:{mz_opt}, {error2}')
     else:
-        ax1.bar(mz1, intensity, width=0.0002)
+        ax1.bar(mz1, max(new_spec.values), width=0.0002)
 
-    ax1.text(mz1[index_mz], intensity[index_mz], f'{mz1[index_mz]}')
-    ax1.set_title(f'm/z: {mz}')
+    
+    ax1.set_title(f'mz_exp: {mz}')
     ax1.set_xlabel('m/z', fontsize=12)
     ax1.set_ylabel('Intensity', fontsize=12)
-    ax1.set_xlim(mz - 0.01, mz + 0.01)
+    ax1.set_xlim(mz - 0.04, mz + 0.04)
 
     if path == None:
         pass
@@ -336,44 +342,12 @@ def peak_checking_plot(df1, mz, rt1, Type='profile', path=None):
         plt.close('all')
 
 
-def gen_ref(files_excel, mz_error=0.005, rt_error=0.1):
-    '''
-    For alignment, generating a reference mz/rt pair
-    :param files_excel: excel files path for extracted peaks
-    :return: mz/rt pair reference
-    '''
-    for i in range(len(files_excel)):
-        name = 'peaks' + str(i)
-        locals()[name] = pd.read_excel(files_excel[i], index_col='Unnamed: 0').loc[:, ['rt', 'mz']].values
-        print(f'\r Reading excel files... {i}/{len(files_excel)}                   ', end="")
-    data = []
-    for i in range(len(files_excel)):
-        name = 'peaks' + str(i)
-        data.append(locals()[name])
-    print(f'\r Concatenating all peaks...                 ', end='')
-    pair = np.concatenate(data, axis=0)
-    peak_all_check = pair
-    peak_ref = []
-    while len(pair) > 0:
-        rt1, mz1 = pair[0]
-        index1 = np.where((pair[:, 0] <= rt1 + rt_error) & (pair[:, 0] >= rt1 - rt_error)
-                          & (pair[:, 1] <= mz1 + mz_error) & (pair[:, 1] >= mz1 - mz_error))
-        peak = np.mean(pair[index1], axis=0).tolist()
-        pair = np.delete(pair, index1, axis=0)
-        peak_ref.append(peak)
-        print(f'\r  {len(pair)}                        ', end='')
 
-    peak_ref2 = np.array(peak_ref)
-    for peak in peak_all_check:
-        rt1, mz1 = peak
-        check = np.where((peak_ref2[:, 0] <= rt1 + rt_error) & (peak_ref2[:, 0] >= rt1 - rt_error)
-                         & (peak_ref2[:, 1] <= mz1 + mz_error) & (peak_ref2[:, 1] >= mz1 - mz_error))
-        if len(check[0]) == 0:
-            peak_ref.append([rt1, mz1])
-    return np.array(peak_ref)
+        
 
 
-def peak_alignment(files_excel, rt_error=0.1, mz_error=0.005):
+
+def peak_alignment(files_excel, rt_error=0.1, mz_error=0.015):
     '''
     Generating peaks information with reference mz/rt pair
     :param files_excel: files for excels of peak picking and peak checking;
@@ -393,7 +367,7 @@ def peak_alignment(files_excel, rt_error=0.1, mz_error=0.005):
             rt1, mz1 = peak_p[i]
             index = np.where((peak_ref[:, 0] <= rt1 + rt_error) & (peak_ref[:, 0] >= rt1 - rt_error)
                              & (peak_ref[:, 1] <= mz1 + mz_error) & (peak_ref[:, 1] >= mz1 - mz_error))
-            new_index = str(round(peak_ref[index][0][0], 2)) + '_' + str(round(peak_ref[index][0][1], 4))
+            new_index = str(peak_ref[index][0][0]) + '_' + str(peak_ref[index][0][1])
             new_all_index.append(new_index)
         peak_df['new_index'] = new_all_index
         peak_df = peak_df.set_index('new_index')
@@ -401,38 +375,7 @@ def peak_alignment(files_excel, rt_error=0.1, mz_error=0.005):
         j += 1
 
 
-def concat_alignment(files_excel, mode='area'):
-    '''
-    Concatenate all data and return
-    :param files_excel: excel files
-    :param mode: selected 'area' or 'intensity' for each sample
-    :return: dataframe
-    '''
-    align = []
-    for i in range(len(files_excel)):
-        if 'alignment' in files_excel[i]:
-            align.append(files_excel[i])
-    for i in range(len(align)):
-        i_name = os.path.split(align[i])[-1].split('.')[0] + '_i'
-        a_name = os.path.split(align[i])[-1].split('.')[0] + '_a'
-        data = pd.read_excel(align[i], index_col='new_index')
-        data[i_name] = data['intensity']
-        data[a_name] = data['area']
-        data = data[~data.index.duplicated(keep='last')]
-        name = 'data' + str(i)
-        if mode == 'area':
-            locals()[name] = data.loc[:, [a_name]]
-        elif mode == 'intensity':
-            locals()[name] = data.loc[:, [i_name]]
-    data_to_concat = []
-    for i in range(len(align)):
-        name = 'data' + str(i)
-        data_to_concat.append(locals()[name])
-    final_data = pd.concat(data_to_concat, axis=1)
-    return final_data
-
-
-def database_evaluation(database, i, df1, df2, path):
+def database_evaluation(database, i, df1, df2, path=None):
     '''
     :param database: excel file containing compounds' information
     :param i:  the index for a row in excel
@@ -441,8 +384,8 @@ def database_evaluation(database, i, df1, df2, path):
     :return:
     '''
     np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
-    formula = database.loc[i, 'formula']
-    rt_exp = database.loc[i, 'RT']
+    formula = database.loc[i, 'Molecular Formula']
+    rt_exp = database.loc[i, 'rt']
     mz_exp = round(database.loc[i, 'Positive'], 4)
     f = Formula(formula)
     a = f.spectrum()
@@ -500,7 +443,11 @@ def database_evaluation(database, i, df1, df2, path):
     index4 = argmin(abs(mz2 - mz_exp)) + 12
     mz3, i3 = mz2[index3:index4], i2[index3:index4]
     mz3_opt, i3_opt = B_spline(mz3, i3)
-    mz_opt = mz3_opt[np.argmax(i3_opt)]
+
+
+    
+    
+    
     ax3.plot(mz3, i3, marker='o')  ### 原始数据
     ax3.plot(mz3_opt, i3_opt, c='r', lw=0.5)  ### 优化数据
     ax3.bar(mz_exp, height_obs, width=0.001, color=['g', 'b'])  ## 理论质量
@@ -568,9 +515,12 @@ def database_evaluation(database, i, df1, df2, path):
         ax6.text(frag_obs - 0.04, height_obs * 0.8,
                  f'  obs: {round(frag_obs, 4)} \n  obs_err: {obs_error} \n  opt: {round(frag_opt, 4)} \n  opt_err: {opt_error}')
         ax6.text(frag_obs + 0.01, height_obs * 1, f'exp: {frag_exp}')
-    fig.savefig(path, dpi=1000)
-    plt.close(fig)
-
+        
+    if path ==None:
+        pass
+    else:   
+        fig.savefig(path, dpi=1000)
+        plt.close(fig)
 
 def peak_checking(peak_df, df1, error=50,
                   i_threshold=500, SN_threshold=5):
@@ -665,38 +615,32 @@ def spec_at_rt(df1, rt):
     return spec
 
 
-def target_spec(spec, target_mz, width=15):
-    '''
-    :param spec: spec generated from function spec_at_rt()
-    :param target_mz: target mz for inspection
-    :param width: width for data points
-    :return: new spec and observed mz
-    '''
-    peaks, _ = scipy.signal.find_peaks(spec.values)
-    index = peaks[argmin(abs(spec.iloc[peaks].index.values - target_mz))]
-    mz_obs = spec.index.values[index]
-    new_spec = spec.iloc[index - width:index + width]
-    return new_spec, mz_obs
 
 
-def evaluate_ms(spec, mz_exp):
-    '''
-    :param spec: spectra for certain retention time
-    :param mz_exp: expected mz
-    :return: observed mz, error1, optimized mz, error2, ms resolution
-    '''
-    new_spec, mz_obs = target_spec(spec, mz_exp)
-    x, y = B_spline(new_spec.index.values, new_spec.values)
-    error1 = round((mz_obs - mz_exp) / mz_exp * 1000000, 1)
-    mz_opt = round(x[argmax(y)], 4)
-    error2 = round((mz_opt - mz_exp) / mz_exp * 1000000, 1)
 
-    max_index = argmax(y)
-    half_height = max(y) / 2
-    mz_left = x[:max_index][argmin(abs(y[:max_index] - half_height))]
-    mz_right = x[max_index:][argmin(abs(y[max_index:] - half_height))]
-    resolution = int(mz_obs / (mz_right - mz_left))
-    return mz_exp, error1, mz_opt, error2, resolution
+
+
+
+
+def concat_alignment(files_excel):
+    '''
+    Concatenate all data and return
+    :param files_excel: excel files
+    :param mode: selected 'area' or 'intensity' for each sample
+    :return: dataframe
+    '''
+    align = []
+    data_to_concat = []
+    for i in range(len(files_excel)):
+        if 'alignment' in files_excel[i]:
+            align.append(files_excel[i])
+    for i in range(len(align)):
+        name = 'data' + str(i)
+        locals()[name] = pd.read_excel(align[i], index_col='Unnamed: 0')
+        data_to_concat.append(locals()[name])
+    final_data = pd.concat(data_to_concat, axis=1)
+    return final_data
+
 
 
 def formula_to_distribution(formula, adducts='+H', num=3):
@@ -797,6 +741,117 @@ def peak_checking_area(ref_all,df1,name='area'):
     return peak_ref
 
 
+def JsonToExcel(path):
+    with open(path,'r',encoding='utf8')as fp:
+        json_data = json.load(fp)
+    Inchikey,precursor,frag,formula,smiles = [],[],[],[],[]
+    num = len(json_data)
+    for i in range(num):
+        try:
+            cmp_info = json_data[i]['compound'][0]['metaData']
+            Inchikey.append([x['value'] for x in cmp_info if x['name']=='InChIKey'][0])
+            formula.append([x['value'] for x in cmp_info if x['name']=='molecular formula'][0])
+            precursor.append([x['value'] for x in cmp_info if x['name']=='total exact mass'][0])
+            smiles.append([x['value'] for x in cmp_info if x['name']=='SMILES'][0])
+        except:
+            Inchikey.append(None)
+            formula.append(None)
+            precursor.append(None)
+            smiles.append(None)
+        frag.append(r'{' + json_data[i]['spectrum'].replace(' ',',') + r'}')    
+        print(f'\r {round(i/num*100,2)}%',end='')
+    database = pd.DataFrame(np.array([Inchikey,precursor,frag,formula,smiles]).T,
+                            columns = ['Inchikey','Precursor','Frag','Formula','Smiles'])
+    return database
+
+
+def evaluate_ms(new_spec,mz_exp):
+    peaks,_ = scipy.signal.find_peaks(new_spec.values)
+    mz_obs = new_spec.index.values[peaks][argmin(abs(new_spec.index.values[peaks]-mz_exp))]
+    x, y = B_spline(new_spec.index.values, new_spec.values)
+    peaks,_ = scipy.signal.find_peaks(y)
+    max_index = peaks[argmin(abs(x[peaks]-mz_exp))]
+    half_height = y[peak_index]/2
+    mz_left = x[:max_index][argmin(abs(y[:max_index] - half_height))]
+    mz_right = x[max_index:][argmin(abs(y[max_index:] - half_height))]
+    resolution = int(mz_obs / (mz_right - mz_left))
+    mz_opt = round(mz_left+(mz_right - mz_left)/2, 4)
+    mz_opt_ref = round(x[max_index],4)
+    
+    if abs(mz_opt-mz_opt_ref)/mz_exp*1000000 <10:
+        final_mz_opt = mz_opt
+    else:
+        final_mz_opt = mz_opt_ref
+        
+    error1 = round((mz_obs -mz_exp)/mz_exp*1000000,1)
+    error2 = round((final_mz_opt -mz_exp)/mz_exp*1000000,1)
+    return mz_obs,error1,final_mz_opt,error2,resolution
+
+
+
+
+def target_spec(spec, target_mz, width=0.04):
+    '''
+    :param spec: spec generated from function spec_at_rt()
+    :param target_mz: target mz for inspection
+    :param width: width for data points
+    :return: new spec and observed mz
+    '''
+    index = argmin(abs(spec.index.values-target_mz))
+    index_left =argmin(abs(spec.index.values-(target_mz-width)))
+    index_right =argmin(abs(spec.index.values-(target_mz+width)))
+    new_spec = spec.iloc[index_left:index_right]
+    return new_spec
+
+
+def gen_ref(files_excel, mz_error=0.015, rt_error=0.1):
+    '''
+    For alignment, generating a reference mz/rt pair
+    :param files_excel: excel files path for extracted peaks
+    :return: mz/rt pair reference
+    '''
+    data = []
+    for i in range(len(files_excel)):
+        name = 'peaks' + str(i)
+        locals()[name] = pd.read_excel(files_excel[i], index_col='Unnamed: 0').loc[:, ['rt', 'mz']].values
+        data.append(locals()[name])
+        print(f'\r Reading excel files... {i}/{len(files_excel)}                   ', end="")
+    print(f'\r Concatenating all peaks...                 ', end='')
+    pair = np.concatenate(data, axis=0)
+    peak_all_check = pair
+    peak_ref = []
+    while len(pair) > 0:
+        rt1, mz1 = pair[0]
+        index1 = np.where((pair[:, 0] <= rt1 + rt_error) & (pair[:, 0] >= rt1 - rt_error)
+                          & (pair[:, 1] <= mz1 + mz_error) & (pair[:, 1] >= mz1 - mz_error))
+        peak = np.mean(pair[index1], axis=0).tolist()
+        peak = [round(peak[0],2),round(peak[1],4)]
+        pair = np.delete(pair, index1, axis=0)
+        peak_ref.append(peak)
+        print(f'\r  {len(pair)}                        ', end='')
+
+    peak_ref2 = np.array(peak_ref)
+    
+    ### 检查是否有漏的
+    peak_lost = []
+    for peak in peak_all_check:
+        rt1, mz1 = peak
+        check = np.where((peak_ref2[:, 0] <= rt1 + rt_error) & (peak_ref2[:, 0] >= rt1 - rt_error)
+                         & (peak_ref2[:, 1] <= mz1 + mz_error) & (peak_ref2[:, 1] >= mz1 - mz_error))
+        if len(check[0]) == 0:
+            peak_lost.append([rt1, mz1])
+    peak_lost=np.array(peak_lost)
+    while len(peak_lost) > 0:
+        rt1, mz1 = peak_lost[0]
+        index1 = np.where((peak_lost[:, 0] <= rt1 + rt_error) & (peak_lost[:, 0] >= rt1 - rt_error)
+                          & (peak_lost[:, 1] <= mz1 + mz_error) & (peak_lost[:, 1] >= mz1 - mz_error))
+        peak = np.mean(peak_lost[index1], axis=0).tolist()
+        peak = [round(peak[0],2),round(peak[1],4)]
+        peak_lost = np.delete(peak_lost, index1, axis=0)
+        peak_ref.append(peak)
+        print(f'\r  {len(pair)}                        ', end='')
+    
+    return np.array(peak_ref)
 
 
 if __name__ == '__main__':
