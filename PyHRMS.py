@@ -327,7 +327,7 @@ def peak_checking_plot(df1, mz, rt1, Type='profile', path=None):
         ax1.text(min(new_spec.index.values)+0.005, max(new_spec.values)*0.8, 
              f'mz_obs: {mz_obs},{error1} \n mz_opt:{mz_opt}, {error2}')
     else:
-        ax1.bar(mz1, max(new_spec.values), width=0.0002)
+        ax1.bar(mz, max(new_spec.values), width=0.0002)
 
     
     ax1.set_title(f'mz_exp: {mz}')
@@ -638,6 +638,7 @@ def concat_alignment(files_excel):
         name = 'data' + str(i)
         locals()[name] = pd.read_excel(align[i], index_col='Unnamed: 0')
         data_to_concat.append(locals()[name])
+        print(f'\r {i}/{len(align)}',end='            ')
     final_data = pd.concat(data_to_concat, axis=1)
     return final_data
 
@@ -758,7 +759,10 @@ def JsonToExcel(path):
             formula.append(None)
             precursor.append(None)
             smiles.append(None)
-        frag.append(r'{' + json_data[i]['spectrum'].replace(' ',',') + r'}')    
+        spec1 = r'{' + json_data[i]['spectrum'].replace(' ',',') + r'}'
+        spec2 = pd.Series(eval(spec1)).sort_values()
+        spec3 = spec2[spec2.index[-50:]].to_dict()
+        frag.append(spec3)    
         print(f'\r {round(i/num*100,2)}%',end='')
     database = pd.DataFrame(np.array([Inchikey,precursor,frag,formula,smiles]).T,
                             columns = ['Inchikey','Precursor','Frag','Formula','Smiles'])
@@ -771,7 +775,7 @@ def evaluate_ms(new_spec,mz_exp):
     x, y = B_spline(new_spec.index.values, new_spec.values)
     peaks,_ = scipy.signal.find_peaks(y)
     max_index = peaks[argmin(abs(x[peaks]-mz_exp))]
-    half_height = y[peak_index]/2
+    half_height = y[max_index]/2
     mz_left = x[:max_index][argmin(abs(y[:max_index] - half_height))]
     mz_right = x[max_index:][argmin(abs(y[max_index:] - half_height))]
     resolution = int(mz_obs / (mz_right - mz_left))
@@ -852,6 +856,106 @@ def gen_ref(files_excel, mz_error=0.015, rt_error=0.1):
         print(f'\r  {len(pair)}                        ', end='')
     
     return np.array(peak_ref)
+
+def ms_bg_removal(background,target_spec,mz_error = 0.01):
+    '''
+    Only support for centroid data, please convert profile data to centroid
+    '''
+    target_spec = target_spec[target_spec>100]
+    bg = []
+    for i in target_spec.index.values:
+        index = argmin(abs(background.index.values-i))
+        if background.index.values[index]-i<mz_error:
+            bg.append([i,background.values[index]])
+        else:
+            bg.append([i,0])
+    bg_spec = pd.Series(np.array(bg).T[1],np.array(bg).T[0])
+    spec_bg_removal = target_spec - bg_spec
+    return spec_bg_removal[spec_bg_removal>100].sort_values()
+
+def gen_frag(df1,df2,rt,company = 'Waters',mode = 'profile'):
+    if company == 'Waters':
+        if mode == 'profile':
+            spec1 = ms_to_centroid(spec_at_rt(df1,rt))
+            spec2 = ms_to_centroid(spec_at_rt(df2,rt))
+            spec_bg_removal = ms_bg_removal(spec1,spec2)           
+        elif mode == 'centroid':
+            spec1 = spec_at_rt(df1,rt)
+            spec2 = spec_at_rt(df2,rt)
+            spec_bg_removal = ms_bg_removal(spec1,spec2)        
+        else:
+            new_frag = None
+            print('please check the mode input, only accept profile or centroid')
+    return spec_bg_removal
+
+
+def ms_to_centroid(spec):
+    peaks,_ = scipy.signal.find_peaks(spec.values)
+    new_index = spec.index.values[peaks]
+    new_values = spec.values[peaks]
+    new_spec = pd.Series(new_values,new_index)
+    return new_spec
+
+def spec_similarity(spec_obs,suspect_frag,error=0.005):
+    fragments = suspect_frag.index.values[-10:]
+    score=0
+    for i in fragments:
+        if min(abs(spec_obs.index.values-i))< error:
+            score+=1
+    return score/len(fragments)
+
+def massbank_match(mz,spec_obs,database1,mode = 'pos',ms1_error = 0.015,ms2_error =0.005,vis = False ):
+    data ={}
+    if mode =='pos':
+        error = abs(database1['Precursor'].values-(mz-1.0078)) 
+        suspect_ind = where(error<ms1_error)[0]
+    else:
+        error = abs(database1['Precursor'].values-(mz+1.0078)) 
+        suspect_ind = where(error<ms1_error)[0]
+    if len(suspect_ind)==0:
+        msbank_result = pd.DataFrame(data,columns = data.keys(),index = ['Inchikey','score']).T
+    else:
+        for num,i in enumerate(suspect_ind):
+            suspect_frag = pd.Series(eval(database1['Frag'][i])).sort_values()
+            cmp_info = database1['Inchikey'][i]
+            score = spec_similarity(spec_obs,suspect_frag,error = ms2_error)
+            data[num] = [i,cmp_info,score]
+        msbank_result = pd.DataFrame(data,columns = data.keys(),index = ['index','Inchikey','score']).T
+        msbank_result = msbank_result.sort_values(by = 'score').reset_index(drop=True)
+    if vis == True:
+        if len(msbank_result) !=0:
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            ax.bar(spec_obs.index.values,spec_obs.values/max(spec_obs.values)*100)
+            index = msbank_result['index'].values[-1]
+            suspect_frag = pd.Series(eval(database1['Frag'][index])).sort_values()
+            ax.bar(suspect_frag.index.values,-suspect_frag.values)
+            ax.set_xlabel('m/z')
+            ax.set_ylabel('Relative intensity')
+            plt.xlim(50,mz*1.2)
+        else:
+            pass
+    else:
+        pass
+    return msbank_result
+
+
+def one_step_process(files_mzml,company):
+    if company == 'Waters':
+        mz_round = 4
+    elif company == 'Agilent':
+        mz_round = 3
+    else:
+        print('Error:Only support for Aglient or Waters files')
+    for file in files_mzml:
+        ms1,*_ =sep_scans(file,company)
+        df1 = gen_df_raw(ms1,mz_round)
+        peak_all = peak_picking(df1)
+        peak_selected = peak_checking(peak_all,df1)
+        peak_selected.to_excel(file.replace('.mzML','.xlsx'))
+    
+
+
 
 
 if __name__ == '__main__':
